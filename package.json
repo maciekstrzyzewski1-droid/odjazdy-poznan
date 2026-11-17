@@ -1,0 +1,12 @@
+{
+  "name": "odjazdy-poznan",
+  "private": true,
+  "type": "module",
+  "description": "Osobista tablica odjazdów ZTM Poznań (GTFS + GTFS-RT)",
+  "scripts": {
+    "build:data": "node scripts/build-data.mjs",
+    "dev": "node server/dev-server.mjs",
+    "test": "node --test \"tests/*.test.mjs\""
+  },
+  "engines": { "node": ">=20" }
+}

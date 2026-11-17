@@ -1,0 +1,7 @@
+name = "odjazdy-rt"
+main = "rt-proxy.js"
+compatibility_date = "2026-11-01"
+
+[vars]
+# Wpisz adres strony z aplikacją, np. "https://twojlogin.github.io". "*" = każdy (niezalecane).
+ALLOWED_ORIGINS = "https://maciekstrzyzewski1-droid.github.io"

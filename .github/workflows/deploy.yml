@@ -1,0 +1,49 @@
+name: Rozkład ZTM i publikacja
+
+# Buduje dane z aktualnych plików GTFS ZTM Poznań i publikuje aplikację na GitHub Pages.
+# ZTM wrzuca nowy plik zwykle między 8:00 a 13:00 (co 2–4 dni), więc sprawdzamy kilka razy dziennie.
+on:
+  schedule:
+    - cron: '20 5,9,12,16,21 * * *'   # UTC
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Pobierz i przetwórz rozkład
+        run: node scripts/build-data.mjs
+      - name: Testy
+        run: node --test "tests/*.test.mjs"
+      - name: Konfiguracja pośrednika danych na żywo
+        env:
+          RT_URL: ${{ vars.RT_URL }}
+        run: node -e "require('fs').writeFileSync('app/config.js', 'window.ODJAZDY_CONFIG = { rtUrl: ' + JSON.stringify(process.env.RT_URL || '') + ' };\n')"
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: app
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
