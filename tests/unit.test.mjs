@@ -106,7 +106,8 @@ test('GTFS-RT: dekodowanie, ujemne opóźnienie, nieznane pola', () => {
 // ---- applyRt na sztucznym rozkładzie ----
 function fakeTT() {
   return {
-    tP: [0], tQ: [3], pSq: [null], pS: [[0, 1, 2, 3]], tT0: [0],
+    tP: [0], tQ: [3], pSq: [null], pS: [[0, 1, 2, 3]], tT0: [0], pD: [[0, 3600, 3900, 4200]],
+    arrOff(p, pos) { return this.pD[p][pos]; },
     stops: [{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: 'D' }],
     seqToPos(k, seq) { return seq - this.tQ[k]; },
   };

@@ -24,23 +24,36 @@ function corsHeaders(origin) {
   return h;
 }
 
+const UPSTREAM_TIMEOUT_MS = 8000;
+const STALE_MAX_MS = 5 * 60_000; // starsze dane i tak odrzuci aplikacja (sprawdza znacznik czasu feedu)
+
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('Upstream timeout')), ms))]);
+
 async function getFeed(name) {
-  const c = memo.get(name);
-  if (c && c.body && Date.now() - c.at < TTL_MS) return c.body;
-  if (c && c.pending) return c.pending;
-  const pending = (async () => {
-    const up = await fetch(UPSTREAM[name], { headers: { 'User-Agent': 'odjazdy-poznan-rt/1.0' } });
-    if (!up.ok) throw new Error(`Upstream HTTP ${up.status}`);
-    const body = await up.arrayBuffer();
-    if (body.byteLength > MAX_BYTES) throw new Error('Upstream too large');
-    memo.set(name, { at: Date.now(), body });
-    return body;
-  })();
-  memo.set(name, { ...(c || {}), pending });
+  const c = memo.get(name) || {};
+  if (c.body && Date.now() - c.at < TTL_MS) return c.body;
+  if (!c.pending) {
+    c.pending = (async () => {
+      const up = await fetch(UPSTREAM[name], {
+        headers: { 'User-Agent': 'odjazdy-poznan-rt/1.0' },
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      });
+      if (!up.ok) throw new Error(`Upstream HTTP ${up.status}`);
+      const body = await up.arrayBuffer();
+      if (body.byteLength > MAX_BYTES) throw new Error('Upstream too large');
+      return body;
+    })().then(
+      (body) => { memo.set(name, { at: Date.now(), body, pending: null }); return body; },
+      (e) => { const cur = memo.get(name); if (cur) cur.pending = null; throw e; },
+    );
+    memo.set(name, c);
+  }
   try {
-    return await pending;
+    // czekamy na wspólne pobranie, ale nigdy dłużej niż limit – zawieszony ZTM nie blokuje wszystkich
+    return await withTimeout(c.pending, UPSTREAM_TIMEOUT_MS + 500);
   } catch (e) {
-    memo.set(name, { ...(c || {}), pending: null });
+    const cur = memo.get(name);
+    if (cur && cur.body && Date.now() - cur.at < STALE_MAX_MS) return cur.body; // ostatnie dobre dane
     throw e;
   }
 }

@@ -282,6 +282,30 @@ export function visitKey(tt, r, inA) {
   return `${r.k}|${r.D}|${x}`;
 }
 
+// Klucze zwijania dla całej tablicy: osobny wiersz dostaje tylko powrót kursu w okolicę
+// po co najmniej minGapMs (np. 148 na lotnisko, ~1 h). Krótka pętla (ten sam autobus na sąsiednim
+// słupku 2–5 min później) zostaje jednym wierszem.
+export function boardKeys(tt, rows, inA, minGapMs = 10 * 60000) {
+  const keys = new Map();
+  const groups = new Map();
+  for (const r of rows) {
+    const g = `${r.k}|${r.D}`;
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(r);
+  }
+  for (const [g, list] of groups) {
+    list.sort((a, b) => a.dep - b.dep);
+    let c = 0, prevVisit = null, prevDep = 0;
+    for (const r of list) {
+      const v = visitKey(tt, r, inA);
+      if (prevVisit !== null && v !== prevVisit && r.dep - prevDep >= minGapMs) c++;
+      prevVisit = v; prevDep = r.dep;
+      keys.set(r, `${g}|${c}`);
+    }
+  }
+  return keys;
+}
+
 // Opcja jest „wolniejsza”, jeśli inna pozwala wyjść nie wcześniej i być na miejscu ≥1 min szybciej.
 // Oznacza: r.best (najwcześniej na miejscu), r.worse (lepsza alternatywa). Wymaga r.leave i r.door.
 export function markWorse(rows, nowMs) {
@@ -384,6 +408,7 @@ export function decodeTripUpdates(u8) {
 // Nakłada opóźnienia na wyniki. rt: { ts, byTrip: Map k -> upd }
 export const RT_MAX_ABS_DELAY = 2 * 3600;   // większe wartości to błędy źródła
 export const RT_MAX_EARLY = 3 * 60;         // przyspieszenie liczymy maks. 3 min
+export const RT_MAX_IMPLAUSIBLE_EARLY = 10 * 60; // > 10 min przed czasem w trasie = błędne przypisanie
 export function applyRt(tt, r, rt, nowMs) {
   r.live = false; r.delay = 0; r.gone = false; r.near = null;
   r.pDep = r.dep; if (r.arr != null) r.pArr = r.arr;
@@ -398,6 +423,18 @@ export function applyRt(tt, r, rt, nowMs) {
   // albo na pętli) do dalszego przystanku z dużym ujemnym opóźnieniem. Takie dane pomijamy,
   // inaczej realny odjazd zniknąłby jako „już minął”.
   if (posRt > 0 && r.base != null && nowMs < r.base + tt.tT0[r.k] * 1000 - 60000) return r;
+  // Test spójności (domyka ostatnią minutę przed startem i chwilę po nim):
+  // pojazd „jadący do” posRt minął już posRt−1, więc jego odjazd stamtąd nie może być w przyszłości,
+  // a do posRt powinien dotrzeć w ciągu kilkunastu minut. Prawdziwe aktualizacje ZTM mieszczą się
+  // w tych granicach z dużym zapasem (zmierzone na 15 tys. aktualizacji: max 14 s).
+  // Kurs „10+ min przed czasem” w trasie to w danych ZTM pojazd przypisany do złego miejsca kursu
+  // (np. stoi na pętli, a feed twierdzi, że jest 20 przystanków dalej) – nie wierzymy w „już minął”.
+  if (posRt > 0 && upd.delay < -RT_MAX_IMPLAUSIBLE_EARLY) return r;
+  if (posRt > 0 && r.base != null) {
+    const p = tt.tP[r.k], t0 = r.base + tt.tT0[r.k] * 1000, d = upd.delay * 1000;
+    if (t0 + tt.pD[p][posRt - 1] * 1000 + d > nowMs + 60000) return r;
+    if (t0 + tt.arrOff(p, posRt) * 1000 + d - nowMs > 15 * 60000) return r;
+  }
   r.live = true;
   const near = tt.stops[tt.pS[tt.tP[r.k]][posRt]];
   r.near = near ? near.name : null;

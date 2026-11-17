@@ -1,6 +1,6 @@
 // Odjazdy Poznań – interfejs. Dane: ZTM Poznań (GTFS + GTFS-RT). Aplikacja nieoficjalna.
 import {
-  Timetable, warsawYmd, fmtHM, decodeTripUpdates, applyRt, dedupeTrips, markWorse, visitKey, routeCmp, RT_MAX_ABS_DELAY,
+  Timetable, warsawYmd, fmtHM, decodeTripUpdates, applyRt, dedupeTrips, markWorse, boardKeys, routeCmp, RT_MAX_ABS_DELAY,
 } from './engine.js';
 
 const CFG = window.ODJAZDY_CONFIG || {};
@@ -154,10 +154,11 @@ async function pollRt() {
   if (!rtOn() || !TT || RT.busy || document.hidden) return;
   RT.busy = true;
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 10000);
+  let timer = null;
   try {
     const meta = META;
-    const idx = await ensureTripIdx();
+    const idx = await ensureTripIdx(); // ~0,16 MB raz na wersję rozkładu – poza limitem 10 s
+    timer = setTimeout(() => ctl.abort(), 10000);
     const res = await fetch(rtUrl(), { cache: 'no-store', signal: ctl.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const buf = new Uint8Array(await res.arrayBuffer());
@@ -288,7 +289,8 @@ function runQuery(q, now, windowMin) {
     // tablica bez celu: zwijamy tylko kolejne słupki tej samej „wizyty” kursu w okolicy;
     // kurs pętlowy, który wraca w okolicę później, zostaje pokazany dwa razy (np. 148 na lotnisko)
     const inA = new Set(A.stops.map((s) => s.i));
-    rows = dedupeTrips(rows, now, (r) => visitKey(TT, r, inA));
+    const keys = boardKeys(TT, rows, inA);
+    rows = dedupeTrips(rows, now, (r) => keys.get(r));
   }
   if (B) markWorse(rows, now);
   const sort = q.to && q.sort === 'arr' ? 'arr' : 'dep';

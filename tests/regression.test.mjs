@@ -1,7 +1,7 @@
 // Testy regresyjne do błędów znalezionych w weryfikacji (sztuczny, mały rozkład).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Timetable, serviceBase, applyRt, dedupeTrips, visitKey, decodeTripUpdates } from '../app/engine.js';
+import { Timetable, serviceBase, applyRt, dedupeTrips, boardKeys, decodeTripUpdates } from '../app/engine.js';
 
 // przystanki: 0 Alfa/01, 1 Alfa/02, 2 Beta, 3 Gamma, 4 Delta, 5 Epsilon
 const tt = new Timetable({
@@ -31,15 +31,16 @@ test('kurs pętlowy: oba przejazdy przez zespół zostają (148 na lotnisko)', (
   assert.equal(rows.length, 2);
   const now = at(7, 55);
   for (const r of rows) { r.leave = r.dep; }
-  const inA = new Set([0, 1]);
-  const out = dedupeTrips(rows, now, (r) => visitKey(tt, r, inA));
+  const keys = boardKeys(tt, rows, new Set([0, 1]));
+  const out = dedupeTrips(rows, now, (r) => keys.get(r));
   assert.deepEqual(out.map((r) => r.pos).sort(), [0, 3]);
 });
 test('dwa sąsiednie słupki zespołu: jeden wiersz', () => {
   const rows = tt.departures(alfa, at(8, 55), at(9, 30)).filter((r) => r.k === 2);
   assert.equal(rows.length, 2);
   for (const r of rows) r.leave = r.dep;
-  const out = dedupeTrips(rows, at(8, 55), (r) => visitKey(tt, r, new Set([0, 1])));
+  const keys = boardKeys(tt, rows, new Set([0, 1]));
+  const out = dedupeTrips(rows, at(8, 55), (r) => keys.get(r));
   assert.equal(out.length, 1);
 });
 test('filtr słupka przed zapytaniem: odjazd z wybranego słupka nie „przeskakuje”', () => {
@@ -82,4 +83,23 @@ test('GTFS-RT: fałszywa długość pola nie zawiesza – błąd od razu', () =>
   assert.throws(() => decodeTripUpdates(new Uint8Array([0x12, 0xff, 0xff, 0xff, 0xff, 0x0f])));
   assert.throws(() => decodeTripUpdates(new Uint8Array([...Buffer.from('\n😀😀')])));
   assert.ok(Date.now() - t0 < 200);
+});
+
+test('krótka pętla (powrót < 10 min): jeden wiersz, długa (≥ 10 min): dwa', () => {
+  const rows = tt.departures(alfa, at(7, 55), at(8, 30)).filter((r) => r.k === 0);
+  for (const r of rows) r.leave = r.dep;
+  // powrót po 20 min -> osobno; przy progu 30 min -> razem
+  assert.equal(new Set(boardKeys(tt, rows, new Set([0, 1]), 10 * 60000).values()).size, 2);
+  assert.equal(new Set(boardKeys(tt, rows, new Set([0, 1]), 30 * 60000).values()).size, 1);
+});
+test('applyRt: „widmo” w ostatniej minucie przed startem nie ukrywa odjazdu', () => {
+  // kurs 148 startuje 08:00 z Alfa/01; o 07:59:30 ZTM twierdzi, że pojazd jedzie już do Delty (pos 4, 08:25)
+  const r = tt.departures(alfa, at(7, 59), at(8, 5)).find((x) => x.k === 0 && x.pos === 0);
+  assert.ok(r);
+  applyRt(tt, r, { byTrip: new Map([[0, { seq: 4, delay: 0 }]]) }, at(7, 59) + 30000);
+  assert.equal(r.gone, false);
+  // spójna aktualizacja po starcie: o 08:21 pojazd jedzie do Delty (08:25) -> Alfa/01 minięta
+  const r2 = tt.departures(alfa, at(7, 59), at(8, 5)).find((x) => x.k === 0 && x.pos === 0);
+  applyRt(tt, r2, { byTrip: new Map([[0, { seq: 4, delay: 0 }]]) }, at(8, 21));
+  assert.equal(r2.gone, true);
 });

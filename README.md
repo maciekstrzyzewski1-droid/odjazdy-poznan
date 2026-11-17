@@ -1,5 +1,7 @@
 # Odjazdy Poznań
 
+**Aplikacja:** https://maciekstrzyzewski1-droid.github.io/odjazdy-poznan/ (na telefonie: „Dodaj do ekranu głównego”)
+
 Osobista tablica odjazdów ZTM Poznań. Pokazuje **wszystkie** bezpośrednie tramwaje i autobusy z przystanków
 w wybranym promieniu (np. 400 m) do celu (np. „Praca”) – także te, które planery tras pomijają.
 
@@ -44,6 +46,7 @@ Testy: `node --test "tests/*.test.mjs"`.
    pobiera rozkład, uruchamia testy i publikuje `app/` pod `https://<login>.github.io/<repo>/`.
 3. **Dane na żywo (opcjonalnie)**: wdroż `worker/` na Cloudflare Workers (darmowy plan wystarczy z ogromnym zapasem):
    `npx wrangler deploy` w katalogu `worker/` (w `wrangler.toml` ustaw `ALLOWED_ORIGINS` na adres strony).
+   Worker przekazuje tylko dwa stałe pliki ZTM i trzyma je w pamięci przez 10 s (Cache API nie działa na `*.workers.dev`).
    Adres workera + `/rt/trip_updates` wpisz w GitHubie jako zmienną repozytorium `RT_URL`
    (Settings → Secrets and variables → Actions → Variables) albo w aplikacji: Ustawienia → Dane na żywo.
 4. Na telefonie otwórz stronę i wybierz „Dodaj do ekranu głównego”.
