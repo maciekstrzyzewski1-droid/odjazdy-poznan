@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Prywatność – Odjazdy Poznań</title>
+  <meta name="description" content="Polityka prywatności aplikacji Odjazdy Poznań: lokalizacja zostaje w telefonie, brak kont, reklam i analityki.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; base-uri 'self'; form-action 'none'; object-src 'none'">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    main { padding-bottom: 40px; }
+    main h2 { font-size: 17px; margin: 26px 0 8px; }
+    main p, main li { line-height: 1.55; font-size: 15px; }
+    main ul { padding-left: 20px; }
+  </style>
+</head>
+<body style="padding-bottom:0">
+  <header class="top"><a class="back" href="./#/about" aria-label="Wróć do aplikacji" style="text-decoration:none">‹</a><h1>Prywatność</h1></header>
+  <main>
+    <p><b>W skrócie:</b> aplikacja „Odjazdy Poznań” nie ma kont, reklam, analityki ani plików cookie. Twoja lokalizacja
+      i zapisane miejsca zostają w telefonie. Autor nie zbiera ani nie przechowuje danych osobowych użytkowników.</p>
+
+    <h2>Kto odpowiada za aplikację</h2>
+    <p>Autor aplikacji – właściciel konta GitHub
+      <a href="https://github.com/maciekstrzyzewski1-droid" rel="noopener">maciekstrzyzewski1-droid</a>.
+      Pytania i zgłoszenia: <a href="https://github.com/maciekstrzyzewski1-droid/odjazdy-poznan/issues" rel="noopener">zgłoszenia w repozytorium aplikacji</a>.
+      Kod źródłowy jest jawny: <a href="https://github.com/maciekstrzyzewski1-droid/odjazdy-poznan" rel="noopener">github.com/maciekstrzyzewski1-droid/odjazdy-poznan</a>.</p>
+
+    <h2>Lokalizacja</h2>
+    <ul>
+      <li>Aplikacja prosi o lokalizację tylko w widokach, które jej potrzebują („Moja lokalizacja”, „W pobliżu”), i dopiero po Twojej zgodzie.</li>
+      <li>Lokalizacja służy wyłącznie do znalezienia przystanków w wybranym promieniu i policzenia czasu dojścia. Obliczenia odbywają się w telefonie.</li>
+      <li>Lokalizacja <b>nie jest wysyłana</b> na żaden serwer ani zapisywana. Gdy zamkniesz widok lub aplikację, przestaje być odczytywana.</li>
+    </ul>
+
+    <h2>Zapisane miejsca, sekcje i ustawienia</h2>
+    <p>Są przechowywane tylko w pamięci przeglądarki na tym urządzeniu (localStorage). Nie trafiają na żaden serwer.
+      „Eksportuj” tworzy plik na Twoim urządzeniu. Aby usunąć wszystko, wyczyść dane tej strony w ustawieniach przeglądarki
+      albo odinstaluj aplikację.</p>
+
+    <h2>Usługi zewnętrzne, które widzą Twój adres IP</h2>
+    <p>Żeby aplikacja działała, telefon łączy się z poniższymi serwerami. Jak każde połączenie w internecie, serwer widzi
+      Twój adres IP i informacje techniczne o przeglądarce. Żadne z tych zapytań nie zawiera Twojej lokalizacji ani zapisanych miejsc.</p>
+    <ul>
+      <li><b>GitHub Pages</b> (GitHub, Inc.) – pliki aplikacji i rozkładu jazdy.
+        <a href="https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement" rel="noopener">Polityka prywatności GitHub</a>.</li>
+      <li><b>Cloudflare</b> – pośrednik danych na żywo (opóźnienia i pozycje pojazdów z serwera ZTM Poznań). Zapytania nie mają parametrów;
+        zapisywanie logów wywołań jest wyłączone. <a href="https://www.cloudflare.com/privacypolicy/" rel="noopener">Polityka prywatności Cloudflare</a>.</li>
+      <li><b>OpenStreetMap</b> – kafelki mapy, tylko gdy wybierasz miejsce na mapie. Serwer map widzi, jaki fragment mapy oglądasz.
+        <a href="https://osmfoundation.org/wiki/Privacy_Policy" rel="noopener">Polityka prywatności OSMF</a>.</li>
+    </ul>
+
+    <h2>Dane o kursach</h2>
+    <p>Rozkład i dane na żywo pochodzą z otwartych danych ZTM Poznań
+      (<a href="https://www.ztm.poznan.pl/otwarte-dane/dla-deweloperow/" rel="noopener">ztm.poznan.pl/otwarte-dane</a>) i są przetwarzane przez aplikację
+      (łączenie plików, wyszukiwanie połączeń i przesiadek, odległości z GPS pojazdów). Aplikacja jest nieoficjalna i niezwiązana z ZTM Poznań
+      ani Miastem Poznań. Dane mogą być niepełne lub opóźnione – w razie wątpliwości obowiązuje rozkład na przystanku.</p>
+
+    <h2>Zmiany</h2>
+    <p>Zmiany tej informacji będą widoczne w historii repozytorium aplikacji. Wersja z 19.11.2026.</p>
+    <p><a class="link" href="./#/about">← Wróć do aplikacji</a></p>
+  </main>
+</body>
+</html>

@@ -18,6 +18,7 @@ const DEFAULT_SETTINGS = {
   hideWorse: false,
   xfer: true,       // połączenia z jedną przesiadką (gdy wyraźnie szybsze)
   xferMin: 2,       // minimalny czas na przesiadkę (min)
+  gpsOk: false,     // użytkownik zobaczył wyjaśnienie i zgodził się na lokalizację
 };
 
 // ======================================================================
@@ -261,6 +262,7 @@ function areaFor(ep, radius) {
   }
   let pt;
   if (ep.type === 'gps') {
+    if (!S.settings.gpsOk) return { consent: true }; // najpierw wyjaśnienie, potem systemowe pytanie
     startGps();
     if (!GPS.pos) return GPS.err ? { error: GPS.err } : { pending: 'Ustalam Twoją lokalizację…' };
     pt = GPS.pos;
@@ -511,6 +513,7 @@ const ROUTES = [
   [/^#\/stops$/, () => viewStops(), 'stops'],
   [/^#\/stop\/(.+)$/, (m) => { let n; try { n = decodeURIComponent(m[1]); } catch { n = m[1]; } return viewStop(n); }, 'stops'],
   [/^#\/settings$/, () => viewSettings(), 'settings'],
+  [/^#\/about$/, () => viewAbout(), 'settings'],
 ];
 let currentTab = 'home';
 function render() {
@@ -551,6 +554,13 @@ function sectionSub(sec) {
   return `${a} → ${esc(epLabel(sec.to))}${sec.to.type !== 'stop' ? ` (${fmtDist(sec.rTo)})` : ''}`;
 }
 function resultsHtml(res, now, { limit = Infinity, compact = false } = {}) {
+  if (res.consent) {
+    return `<div class="empty"><p><b>Ta sekcja używa Twojej lokalizacji</b>, żeby znaleźć przystanki w pobliżu i policzyć czas dojścia.
+      Lokalizacja zostaje w telefonie – aplikacja nigdzie jej nie wysyła ani nie zapisuje.</p>
+      <div class="btns"><button class="btn primary" data-act="gps-allow">Użyj lokalizacji</button>
+      <a class="btn" href="prywatnosc.html">Prywatność</a></div>
+      <p class="hint" style="margin-top:10px">Wolisz bez lokalizacji? Edytuj sekcję i wybierz zapisane miejsce albo przystanek.</p></div>`;
+  }
   if (res.pending) return `<div class="empty"><p>${esc(res.pending)}</p></div>`;
   if (res.error) return `<div class="empty"><p>${esc(res.error)}</p></div>`;
   let rows = res.rows;
@@ -590,9 +600,44 @@ function viewHome() {
   html += footHtml();
   return { html, gps: needGps };
 }
+// Warunki ZTM: źródło danych, data ostatniej aktualizacji, informacja o przetworzeniu.
+function dataUpdated() {
+  if (!META || !META.feeds?.length) return '';
+  const p = META.feeds.map((f) => f.published).sort().at(-1) || '';
+  return /^\d{8}/.test(p) ? `${p.slice(6, 8)}.${p.slice(4, 6)}.${p.slice(0, 4)}` : '';
+}
 function footHtml() {
   const v = TT ? `Rozkład ${fmtYmd(TT.dates[0])}–${fmtYmd(TT.dates.at(-1))}` : '';
-  return `<div class="foot">${v}<br>Dane: ZTM Poznań (GTFS, GTFS-RT). Aplikacja nieoficjalna – w razie wątpliwości sprawdź rozkład na przystanku.</div>`;
+  const upd = dataUpdated();
+  return `<div class="foot">${v}<br>Źródło danych: <a href="https://www.ztm.poznan.pl/otwarte-dane/dla-deweloperow/" rel="noopener">ZTM Poznań – otwarte dane</a>${upd ? ` (aktualizacja ${upd})` : ''},
+    przetworzone przez aplikację.<br>Aplikacja nieoficjalna, niezwiązana z ZTM Poznań. W razie wątpliwości obowiązuje rozkład na przystanku.
+    <br><a href="#/about">O aplikacji</a> · <a href="prywatnosc.html">Prywatność</a></div>`;
+}
+
+function viewAbout() {
+  const upd = dataUpdated();
+  const html = `
+    <div class="card" style="padding:14px"><p style="margin-top:0"><b>Odjazdy Poznań</b> pokazuje wszystkie tramwaje i autobusy,
+      które dowiozą Cię do celu – bezpośrednio albo z jedną przesiadką – ze wszystkich przystanków w wybranym promieniu,
+      z czasem dojścia i danymi na żywo.</p>
+      <p class="hint" style="margin-bottom:0">Aplikacja jest darmowa, bez kont, reklam i analityki. Kod źródłowy:
+      <a href="https://github.com/maciekstrzyzewski1-droid/odjazdy-poznan" rel="noopener">GitHub</a>.</p></div>
+    <h3 class="sec">Źródło danych</h3>
+    <div class="card" style="padding:14px"><p class="hint" style="margin:0">Rozkład jazdy (GTFS) i dane na żywo (GTFS-RT):
+      <a href="https://www.ztm.poznan.pl/otwarte-dane/dla-deweloperow/" rel="noopener">otwarte dane ZTM Poznań</a>.<br>
+      Ostatnia aktualizacja danych rozkładu: <b>${esc(upd || '—')}</b>${META ? ` (przygotowano ${esc(new Date(META.generated).toLocaleString('pl-PL'))})` : ''}.<br>
+      Dane są <b>przetworzone przez aplikację</b>: łączenie plików rozkładu, wyszukiwanie połączeń bezpośrednich i z przesiadką,
+      czas dojścia pieszo, korekta odjazdu na podstawie opóźnień i pozycji GPS pojazdów.<br>
+      Aplikacja jest <b>nieoficjalna</b> i niezwiązana z ZTM Poznań ani Miastem Poznań. Dane mogą być niepełne lub opóźnione –
+      w razie wątpliwości obowiązuje rozkład na przystanku i komunikaty ZTM.</p></div>
+    <h3 class="sec">Prywatność</h3>
+    <div class="card" style="padding:14px"><p class="hint" style="margin:0">Lokalizacja i zapisane miejsca zostają w telefonie.
+      Szczegóły: <a href="prywatnosc.html">polityka prywatności</a>.</p></div>
+    <h3 class="sec">Kontakt</h3>
+    <div class="card" style="padding:14px"><p class="hint" style="margin:0">Błędy i pomysły:
+      <a href="https://github.com/maciekstrzyzewski1-droid/odjazdy-poznan/issues" rel="noopener">zgłoszenia na GitHubie</a>.</p></div>
+    <div class="foot">Mapa: © współtwórcy OpenStreetMap · Leaflet</div>`;
+  return { html, title: 'O aplikacji', back: '#/settings' };
 }
 
 // ---------- Widok sekcji ----------
@@ -789,6 +834,11 @@ function viewSettings() {
       <div class="btns" style="margin-top:12px"><button class="btn" data-act="update-data">Sprawdź aktualizację</button></div>
     </div>
 
+    <h3 class="sec">Informacje</h3>
+    <ul class="list"><li class="tap" data-act="go" data-to="#/about"><div class="grow"><div class="name">O aplikacji i źródło danych</div></div><span>›</span></li>
+      <li class="tap" data-act="go" data-to="prywatnosc.html"><div class="grow"><div class="name">Prywatność</div></div><span>›</span></li>
+      <li><label class="check" style="padding:0"><input type="checkbox" data-set="gpsOk" ${st.gpsOk ? 'checked' : ''}> Zgoda na użycie lokalizacji w sekcjach „Moja lokalizacja”</label></li></ul>
+
     <h3 class="sec">Kopia ustawień</h3>
     <div class="btns"><button class="btn" data-act="export">Eksportuj</button><button class="btn" data-act="import">Importuj</button></div>
     <p class="hint">Miejsca i sekcje są zapisane tylko w tej przeglądarce. Eksport pozwala przenieść je na inne urządzenie.</p>
@@ -889,7 +939,7 @@ function placeSheet(id, preset = {}) {
     update();
     $('#pl-gps', root).addEventListener('click', async (ev) => {
       ev.currentTarget.disabled = true;
-      try { const pos = await getPositionOnce(); st.lat = pos.lat; st.lon = pos.lon; update(); center(17); if (pos.acc > 100) toast(`Dokładność tylko ±${Math.round(pos.acc)} m – popraw punkt na mapie`); }
+      try { const pos = await getPositionOnce(); S.settings.gpsOk = true; save(); st.lat = pos.lat; st.lon = pos.lon; update(); center(17); if (pos.acc > 100) toast(`Dokładność tylko ±${Math.round(pos.acc)} m – popraw punkt na mapie`); }
       catch (e) { toast(e.message); }
       finally { ev.currentTarget.disabled = false; }
     });
@@ -1050,6 +1100,8 @@ document.addEventListener('click', async (e) => {
     refreshLive();
     return;
   }
+  if (act === 'gps-allow') { S.settings.gpsOk = true; save(); render(); return; }
+  if (act === 'go') { const to = el.dataset.to || '#/'; if (to.startsWith('#')) location.hash = to; else location.href = to; return; }
   if (act === 'place-new') return placeSheet(null);
   if (act === 'place-edit') return placeSheet(el.dataset.id);
   if (act === 'section-new') return sectionSheet(null);

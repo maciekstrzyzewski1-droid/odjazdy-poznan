@@ -1,9 +1,9 @@
 // Service worker: aplikacja działa bez internetu (sam rozkład), dane na żywo zawsze z sieci.
-const SHELL = 'odjazdy-shell-v2';
+const SHELL = 'odjazdy-shell-v3';
 const DATA = 'odjazdy-data-v1';
 const SHELL_FILES = [
   './', 'index.html', 'style.css', 'app.js', 'engine.js', 'config.js', 'manifest.webmanifest',
-  'icons/icon.svg', 'icons/icon-192.png',
+  'icons/icon.svg', 'icons/icon-192.png', 'prywatnosc.html',
 ];
 
 self.addEventListener('install', (e) => {
