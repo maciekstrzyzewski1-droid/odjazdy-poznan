@@ -1,5 +1,6 @@
 // Cloudflare Worker: pośrednik GTFS-RT ZTM Poznań z nagłówkami CORS i krótkim buforem (10 s).
-// Obsługuje wyłącznie dwa stałe pliki – nie jest otwartym proxy.
+// Obsługuje wyłącznie trzy stałe pliki – nie jest otwartym proxy.
+//   GET /rt/feeds             -> feeds.pb (opóźnienia + pozycje pojazdów w jednym – używa tego aplikacja)
 //   GET /rt/trip_updates      -> trip_updates.pb
 //   GET /rt/vehicle_positions -> vehicle_positions.pb
 // Zmienna ALLOWED_ORIGINS: lista originów rozdzielona przecinkami (np. https://ktos.github.io) albo "*".
@@ -9,6 +10,7 @@
 const UPSTREAM = {
   trip_updates: 'https://www.ztm.poznan.pl/pl/dla-deweloperow/getGtfsRtFile?file=trip_updates.pb',
   vehicle_positions: 'https://www.ztm.poznan.pl/pl/dla-deweloperow/getGtfsRtFile?file=vehicle_positions.pb',
+  feeds: 'https://www.ztm.poznan.pl/pl/dla-deweloperow/getGtfsRtFile?file=feeds.pb',
 };
 const TTL_MS = 10_000;
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -67,7 +69,7 @@ export default {
 
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders(allowOrigin) });
     if (request.method !== 'GET') return new Response('Method Not Allowed', { status: 405 });
-    const m = /^\/rt\/(trip_updates|vehicle_positions)$/.exec(url.pathname);
+    const m = /^\/rt\/(trip_updates|vehicle_positions|feeds)$/.exec(url.pathname);
     if (!m) return new Response('Not Found', { status: 404 });
     if (!allowed.includes('*') && origin && !allowOrigin) return new Response('Forbidden', { status: 403 });
 

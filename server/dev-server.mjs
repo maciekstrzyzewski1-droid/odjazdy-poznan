@@ -13,6 +13,7 @@ const HOST = process.env.HOST || '127.0.0.1';
 const RT_FILES = {
   trip_updates: 'https://www.ztm.poznan.pl/pl/dla-deweloperow/getGtfsRtFile?file=trip_updates.pb',
   vehicle_positions: 'https://www.ztm.poznan.pl/pl/dla-deweloperow/getGtfsRtFile?file=vehicle_positions.pb',
+  feeds: 'https://www.ztm.poznan.pl/pl/dla-deweloperow/getGtfsRtFile?file=feeds.pb',
 };
 const RT_TTL = 10_000;
 const MIME = {
@@ -41,7 +42,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://x');
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405).end(); return; }
-    const m = /^\/api\/rt\/(trip_updates|vehicle_positions)$/.exec(url.pathname);
+    const m = /^\/api\/rt\/(trip_updates|vehicle_positions|feeds)$/.exec(url.pathname);
     if (m) {
       const body = await getRt(m[1]);
       res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });

@@ -163,7 +163,8 @@ async function pollRt() {
     const meta = META;
     const idx = await ensureTripIdx(); // ~0,16 MB raz na wersję rozkładu – poza limitem 10 s
     timer = setTimeout(() => ctl.abort(), 10000);
-    // pozycje GPS pojazdów (ten sam pośrednik, drugi plik) – opcjonalne, błąd nie blokuje opóźnień
+    // feeds.pb ma opóźnienia i pozycje pojazdów naraz (1 zapytanie). Przy adresie „…/trip_updates”
+    // pozycje pobieramy osobno – opcjonalnie, błąd nie blokuje opóźnień.
     const vpUrl = rtUrl().replace(/trip_updates(\.pb)?(\?.*)?$/, 'vehicle_positions$1$2');
     const vpP = vpUrl !== rtUrl()
       ? fetch(vpUrl, { cache: 'no-store', signal: ctl.signal }).then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null)
@@ -183,10 +184,10 @@ async function pollRt() {
       if (u.delay > maxDelay && u.delay <= RT_MAX_ABS_DELAY) maxDelay = u.delay;
     }
     let vpByTrip = null;
-    const vpBuf = await vpP;
+    const vpBuf = (await vpP) || buf;
     if (vpBuf && vpBuf.byteLength < 5 * 1024 * 1024) {
       try {
-        const v = decodeVehiclePositions(new Uint8Array(vpBuf));
+        const v = decodeVehiclePositions(vpBuf instanceof Uint8Array ? vpBuf : new Uint8Array(vpBuf));
         if (!v.ts || Math.abs(v.ts - d.ts) < 180) {
           vpByTrip = new Map();
           for (const [id, pos] of v.positions) { const ks = idx.get(id); if (ks) for (const k of ks) vpByTrip.set(k, pos); }
