@@ -1,6 +1,7 @@
 // Odjazdy Poznań – interfejs. Dane: ZTM Poznań (GTFS + GTFS-RT). Aplikacja nieoficjalna.
 import {
-  Timetable, warsawYmd, fmtHM, decodeTripUpdates, applyRt, dedupeTrips, markWorse, boardKeys, routeCmp, RT_MAX_ABS_DELAY,
+  Timetable, warsawYmd, fmtHM, decodeTripUpdates, decodeVehiclePositions, applyRt, dedupeTrips, markWorse, boardKeys,
+  pruneTransfers, routeCmp, RT_MAX_ABS_DELAY,
 } from './engine.js';
 
 const CFG = window.ODJAZDY_CONFIG || {};
@@ -15,6 +16,8 @@ const DEFAULT_SETTINGS = {
   rtUrl: '',        // nadpisanie adresu pośrednika
   theme: 'auto',
   hideWorse: false,
+  xfer: true,       // połączenia z jedną przesiadką (gdy wyraźnie szybsze)
+  xferMin: 2,       // minimalny czas na przesiadkę (min)
 };
 
 // ======================================================================
@@ -50,6 +53,7 @@ function normalizeState(s) {
   settings.detour = clamp(settings.detour, 1, 2);
   settings.window = clamp(settings.window, 30, 360);
   settings.radius = clamp(settings.radius, 100, 2000);
+  settings.xferMin = clamp(settings.xferMin, 0, 10);
   if (!['auto', 'dark', 'light'].includes(settings.theme)) settings.theme = 'auto';
   return {
     places, sections, settings,
@@ -159,6 +163,11 @@ async function pollRt() {
     const meta = META;
     const idx = await ensureTripIdx(); // ~0,16 MB raz na wersję rozkładu – poza limitem 10 s
     timer = setTimeout(() => ctl.abort(), 10000);
+    // pozycje GPS pojazdów (ten sam pośrednik, drugi plik) – opcjonalne, błąd nie blokuje opóźnień
+    const vpUrl = rtUrl().replace(/trip_updates(\.pb)?(\?.*)?$/, 'vehicle_positions$1$2');
+    const vpP = vpUrl !== rtUrl()
+      ? fetch(vpUrl, { cache: 'no-store', signal: ctl.signal }).then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null)
+      : Promise.resolve(null);
     const res = await fetch(rtUrl(), { cache: 'no-store', signal: ctl.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const buf = new Uint8Array(await res.arrayBuffer());
@@ -173,7 +182,18 @@ async function pollRt() {
       if (ks) for (const k of ks) byTrip.set(k, u);
       if (u.delay > maxDelay && u.delay <= RT_MAX_ABS_DELAY) maxDelay = u.delay;
     }
-    RT.data = { ts: d.ts, byTrip, count: d.updates.size, maxDelay, version: meta.version };
+    let vpByTrip = null;
+    const vpBuf = await vpP;
+    if (vpBuf && vpBuf.byteLength < 5 * 1024 * 1024) {
+      try {
+        const v = decodeVehiclePositions(new Uint8Array(vpBuf));
+        if (!v.ts || Math.abs(v.ts - d.ts) < 180) {
+          vpByTrip = new Map();
+          for (const [id, pos] of v.positions) { const ks = idx.get(id); if (ks) for (const k of ks) vpByTrip.set(k, pos); }
+        }
+      } catch { /* bez pozycji GPS */ }
+    }
+    RT.data = { ts: d.ts, byTrip, vpByTrip, count: d.updates.size, maxDelay, version: meta.version };
     RT.fetchedAt = Date.now();
     RT.error = null;
   } catch (e) {
@@ -252,6 +272,26 @@ function areaFor(ep, radius) {
   return { stops: near, lat: pt.lat, lon: pt.lon, acc: pt.acc };
 }
 
+// Przesiadki liczone na rozkładzie (bez danych na żywo) z pamięcią na 5 minut – na telefonie to
+// najdroższa część zapytania. Dane na żywo nakładane są przy każdym odświeżeniu.
+const XFER_CACHE = new Map();
+function transfersFor(A, B, fromMs, toMs) {
+  const bucket = Math.floor(fromMs / 300000) * 300000;
+  const st = S.settings;
+  const key = [META.version, bucket, toMs - fromMs, st.xferMin, st.speed, st.detour,
+    A.stops.map((s) => `${s.i}:${s.walk}`).join(','), B.stops.map((s) => `${s.i}:${s.walk}`).join(',')].join('|');
+  let raw = XFER_CACHE.get(key);
+  if (!raw) {
+    raw = TT.transferConnections(A.stops, B.stops, bucket, toMs + 300000, {
+      minTransferSec: st.xferMin * 60, maxWalkM: 250, walkSec: walkSecFor,
+    });
+    if (XFER_CACHE.size > 30) XFER_CACHE.clear();
+    XFER_CACHE.set(key, raw);
+  }
+  return raw.filter((r) => r.dep >= fromMs && r.dep <= toMs)
+    .map((r) => ({ ...r, xfer: { ...r.xfer }, leg2: { ...r.leg2 } }));
+}
+
 function runQuery(q, now, windowMin) {
   if (!TT) return { error: DATA_ERR || 'Brak danych rozkładu' };
   const A = areaFor(q.from, q.rFrom);
@@ -270,22 +310,34 @@ function runQuery(q, now, windowMin) {
   const fromMs = now - back * 60000;
   const toMs = now + windowMin * 60000;
   let rows = B ? TT.connections(A.stops, B.stops, fromMs, toMs) : TT.departures(A.stops, fromMs, toMs);
+  if (B && S.settings.xfer) rows = rows.concat(transfersFor(A, B, fromMs, toMs));
   const hidden = new Set(q.hidden || []);
   const lines = new Map(); // linie w wynikach (przed filtrem linii) – do przycisków filtra
+  const modeOk = (route) => (isTram(route) ? q.tram !== false : q.bus !== false);
   rows = rows.filter((r) => {
     const route = TT.routes[TT.tR[r.k]];
-    if (!(isTram(route) ? q.tram !== false : q.bus !== false)) return false;
+    const route2 = r.leg2 ? TT.routes[TT.tR[r.leg2.k]] : null;
+    if (!modeOk(route) || (route2 && !modeOk(route2))) return false;
     lines.set(route.short, route);
-    return !hidden.has(route.short);
+    if (route2) lines.set(route2.short, route2);
+    return !hidden.has(route.short) && !(route2 && hidden.has(route2.short));
   });
   for (const r of rows) {
-    applyRt(TT, r, live, now);
+    if (r.leg2) {
+      const l1 = applyRt(TT, { k: r.k, p: r.p, pos: r.pos, D: r.D, base: r.base, dep: r.dep, arr: r.xfer.arr }, live, now);
+      const l2 = applyRt(TT, r.leg2, live, now);
+      Object.assign(r, { live: l1.live, delay: l1.delay, gone: l1.gone || l2.gone, near: l1.near, vpDist: l1.vpDist, atStop: l1.atStop, pDep: l1.pDep, pArr: l2.pArr });
+      r.xfer.pArr = l1.pArr;
+      r.xfer.risky = r.xfer.pArr + (r.xfer.walk + 60) * 1000 > l2.pDep;
+    } else applyRt(TT, r, live, now);
     r.leave = r.pDep - r.walk * 1000;
     r.door = r.pArr != null ? r.pArr + (r.arrWalk || 0) * 1000 : null;
   }
   rows = rows.filter((r) => !r.gone && r.pDep >= now - 20000 && r.dep <= toMs);
-  if (B) rows = dedupeTrips(rows, now);
-  else {
+  if (B) {
+    rows = dedupeTrips(rows, now, (r) => `${r.leg2 ? 'x|' : ''}${r.k}|${r.D}`);
+    rows = pruneTransfers(rows, now);
+  } else {
     // tablica bez celu: zwijamy tylko kolejne słupki tej samej „wizyty” kursu w okolicy;
     // kurs pętlowy, który wraca w okolicę później, zostaje pokazany dwa razy (np. 148 na lotnisko)
     const inA = new Set(A.stops.map((s) => s.i));
@@ -326,7 +378,7 @@ function leaveHtml(r, now) {
 function rowHtml(r, now, { compact = false } = {}) {
   const inf = TT.tripInfo(r.k);
   const st = TT.stops[r.stop];
-  const key = `${r.k}|${r.D}|${r.pos}`;
+  const key = `${r.k}|${r.D}|${r.pos}${r.leg2 ? `|x${r.leg2.k}` : ''}`;
   const open = !compact && expanded.has(key);
   const miss = r.walk && r.leave < now - 90000;
   const nz = TT.pickup(r.p, r.pos) === 3;
@@ -335,6 +387,8 @@ function rowHtml(r, now, { compact = false } = {}) {
   if (r.worse && !r.best) tags.push('<span class="tag worse">wolniej</span>');
   const depot = inf.notes.find((n) => /zjazd|zajezdni/i.test(n.text));
   if (depot) tags.push('<span class="tag note">do zajezdni</span>');
+  if (r.leg2) tags.push(r.xfer.risky ? '<span class="tag note">przesiadka zagrożona</span>' : '<span class="tag worse">przesiadka</span>');
+  if (r.atStop) tags.push('<span class="tag best">na przystanku</span>');
   const timeLine = r.live && fmtHM(r.dep) !== fmtHM(r.pDep)
     ? `<s>${fmtHM(r.dep)}</s>${fmtHM(r.pDep)}${delayHtml(r)}`
     : `${fmtHM(r.pDep)}${r.live ? delayHtml(r) : ''}`;
@@ -342,18 +396,27 @@ function rowHtml(r, now, { compact = false } = {}) {
   if (r.dist) l2 += ` · ${fmtDist(r.dist)} (${Math.max(1, Math.round(r.walk / 60))}′)`;
   if (nz) l2 += ' · <abbr title="przystanek na żądanie – daj znak kierowcy">nż</abbr>';
   let l3 = '';
+  if (r.leg2) {
+    const xs = TT.stops[r.xfer.stop], ys = TT.stops[r.leg2.stop];
+    const r2 = TT.routes[TT.tR[r.leg2.k]];
+    const wait = Math.max(0, Math.round((r.leg2.pDep - r.xfer.pArr) / 60000));
+    l3 += `<div class="l3">przesiadka: <b>${esc(xs.name)}</b> ${fmtHM(r.xfer.pArr)}${ys.name !== xs.name ? ` → pieszo ${fmtDist(r.xfer.dist)} do <b>${esc(ys.name)}</b>` : ''} → ${badge(r2, true)} ${fmtHM(r.leg2.pDep)}${r.leg2.live ? delayHtml(r.leg2) : ''} (${wait} min)</div>`;
+  }
   if (r.arrStop != null) {
     const as = TT.stops[r.arrStop];
     const ride = Math.round((r.pArr - r.pDep) / 60000);
-    l3 = `<div class="l3">→ <b>${esc(as.name)}</b> ${fmtHM(r.pArr)} · ${ride} min jazdy`
+    l3 += `<div class="l3">→ <b>${esc(as.name)}</b> ${fmtHM(r.pArr)} · ${ride} min ${r.leg2 ? 'w drodze' : 'jazdy'}`
       + (r.arrWalk ? ` · na miejscu <b>${fmtHM(r.door)}</b>` : '') + '</div>';
     if (r.worse && !r.best && !compact) {
       const ai = TT.tripInfo(r.worse.k);
       l3 += `<div class="l3">lepiej: ${esc(ai.route.short)} o ${fmtHM(r.worse.pDep)} – na miejscu ${fmtHM(r.worse.door)}</div>`;
     }
   }
+  const badges = r.leg2
+    ? `<div class="badges">${badge(inf.route)}<span class="via" aria-label="przesiadka">↓</span>${badge(TT.routes[TT.tR[r.leg2.k]], true)}</div>`
+    : badge(inf.route);
   return `<li class="row${miss ? ' miss' : ''}${(r.worse && !r.best) ? ' dim' : ''}" data-act="toggle" data-key="${key}">
-    ${badge(inf.route)}
+    ${badges}
     <div class="main">
       <div class="l1"><span class="hs">${esc(inf.headsign)}</span>${tags.join('')}</div>
       <div class="l2">${l2}</div>${l3}
@@ -362,15 +425,27 @@ function rowHtml(r, now, { compact = false } = {}) {
     ${open ? detailHtml(r, inf) : ''}
   </li>`;
 }
+function vehPosOf(r) {
+  if (!r.live || !RT.data) return -1;
+  const upd = RT.data.byTrip.get(r.k);
+  return upd ? TT.seqToPos(r.k, upd.seq) : -1;
+}
+function stopListHtml(k, D, from, to, delayMs, vehPos) {
+  const stops = TT.tripStops(k, D);
+  const items = [];
+  for (let j = from; j <= to; j++) {
+    const s = stops[j];
+    const t = (j === from ? s.dep : s.arr) + (j >= vehPos ? delayMs : 0);
+    const cls = [j === from || j === to ? 'on' : '', j === vehPos ? 'veh' : ''].join(' ').trim();
+    items.push(`<li class="${cls}"><span>${esc(s.stop.name)} <span class="post">${esc(postOf(s.stop.code))}</span>${s.pickup === 3 ? ' <abbr title="na żądanie">nż</abbr>' : ''}</span><span class="hm">${fmtHM(t)}</span></li>`);
+  }
+  return `<ol>${items.join('')}</ol>`;
+}
 function detailHtml(r, inf) {
   const stops = TT.tripStops(r.k, r.D);
-  const end = r.arrPos != null ? r.arrPos : stops.length - 1;
+  const end = r.leg2 ? r.xfer.pos : r.arrPos != null ? r.arrPos : stops.length - 1;
   const d = r.live ? r.delay * 1000 : 0;
-  let vehPos = -1;
-  if (r.live && RT.data) {
-    const upd = RT.data.byTrip.get(r.k);
-    if (upd) vehPos = TT.seqToPos(r.k, upd.seq);
-  }
+  const vehPos = vehPosOf(r);
   const meta = [];
   meta.push(`${esc(inf.route.agency || 'Przewoźnik')} · linia ${esc(inf.route.short)} → ${esc(inf.headsign)}`);
   if (r.live) {
@@ -378,17 +453,20 @@ function detailHtml(r, inf) {
     const away = vehPos >= 0 && vehPos <= r.pos ? r.pos - vehPos : -1;
     const awayTxt = away === 0 ? ' · dojeżdża do Twojego przystanku' : away > 0 ? ` · ${away} ${away === 1 ? 'przystanek' : away < 5 ? 'przystanki' : 'przystanków'} przed Tobą` : '';
     meta.push(`<span class="live-dot"></span>na żywo${r.near ? ` · zbliża się do: ${esc(r.near)}` : ''}${awayTxt}${upd?.label ? ` · pojazd ${esc(upd.label)}` : ''}`);
+    if (r.atStop) meta.push('GPS: pojazd stoi przy Twoim przystanku');
+    else if (r.vpDist != null) meta.push(`GPS: pojazd ok. ${fmtDist(r.vpDist)} od Twojego przystanku (w linii prostej)`);
   } else meta.push('wg rozkładu (brak danych na żywo dla tego kursu)');
   if (inf.wheelchair) meta.push('♿ pojazd przystosowany');
   for (const n of inf.notes) meta.push(`<b>${esc(n.code)}</b> – ${esc(n.text)}`);
-  const items = [];
-  for (let j = r.pos; j <= end; j++) {
-    const s = stops[j];
-    const t = (j === r.pos ? s.dep : s.arr) + (j >= vehPos ? d : 0);
-    const cls = [j === r.pos || j === end ? 'on' : '', j === vehPos ? 'veh' : ''].join(' ').trim();
-    items.push(`<li class="${cls}"><span>${esc(s.stop.name)} <span class="post">${esc(postOf(s.stop.code))}</span>${s.pickup === 3 ? ' <abbr title="na żądanie">nż</abbr>' : ''}</span><span class="hm">${fmtHM(t)}</span></li>`);
+  let html = `<div class="meta">${meta.join('<br>')}</div>${stopListHtml(r.k, r.D, r.pos, end, d, vehPos)}`;
+  if (r.leg2) {
+    const l2 = r.leg2, i2 = TT.tripInfo(l2.k);
+    const wait = Math.max(0, Math.round((l2.pDep - r.xfer.pArr) / 60000));
+    const walkTxt = l2.stop !== r.xfer.stop ? `przejdź ${fmtDist(r.xfer.dist)} (ok. ${Math.max(1, Math.round(r.xfer.walk / 60))} min) na ${esc(TT.stops[l2.stop].name)} ${esc(postOf(TT.stops[l2.stop].code))}, ` : '';
+    html += `<div class="meta more">⇄ Przesiadka: ${walkTxt}czekasz ok. ${wait} min${r.xfer.risky ? ' – <b>przy obecnym opóźnieniu możesz nie zdążyć</b>' : ''}<br>${esc(i2.route.agency || '')} · linia ${esc(i2.route.short)} → ${esc(i2.headsign)}${l2.live ? ' · <span class="live-dot"></span>na żywo' : ''}</div>`;
+    html += stopListHtml(l2.k, l2.D, l2.pos, l2.arrPos, l2.live ? l2.delay * 1000 : 0, vehPosOf(l2));
   }
-  return `<div class="detail" data-act="noop"><div class="meta">${meta.join('<br>')}</div><ol>${items.join('')}</ol></div>`;
+  return `<div class="detail" data-act="noop">${html}</div>`;
 }
 
 // ======================================================================
@@ -684,6 +762,10 @@ function viewSettings() {
       <label class="field"><span>Pokazuj kursy na najbliższe: <b data-out="window">${st.window} min</b></span>
         <input type="range" min="30" max="240" step="15" value="${st.window}" data-set="window"></label>
       <label class="check"><input type="checkbox" data-set="hideWorse" ${st.hideWorse ? 'checked' : ''}> Ukrywaj wolniejsze opcje (gdy późniejszy kurs dowiezie szybciej)</label>
+      <label class="check"><input type="checkbox" data-set="xfer" ${st.xfer ? 'checked' : ''}> Pokazuj połączenia z 1 przesiadką (tylko gdy wyraźnie szybsze niż bezpośrednie)</label>
+      <label class="field"><span>Minimalny czas na przesiadkę</span><select data-set="xferMin">
+        ${[1, 2, 3, 4, 5].map((v) => `<option value="${v}"${st.xferMin === v ? ' selected' : ''}>${v} min</option>`).join('')}
+      </select></label>
       <label class="field" style="margin:8px 0 0"><span>Motyw</span><select data-set="theme">
         ${[['auto', 'jak w systemie'], ['dark', 'ciemny'], ['light', 'jasny']].map(([v, l]) => `<option value="${v}"${st.theme === v ? ' selected' : ''}>${l}</option>`).join('')}
       </select></label>

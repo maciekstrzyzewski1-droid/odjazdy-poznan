@@ -12,7 +12,11 @@ w wybranym promieniu (np. 400 m) do celu (np. „Praca”) – także te, które
   późniejszy kurs dowiezie szybciej (np. linia jadąca okrężnie). Nic nie jest ukrywane, chyba że to włączysz.
 - **W pobliżu**: wszystkie odjazdy z przystanków wokół Ciebie (promień 100–1000 m).
 - **Przystanki**: wyszukiwarka (bez polskich znaków też działa), tablica słupków, filtr „Dokąd?”.
-- **Na żywo**: opóźnienia z GTFS-RT ZTM (co 20 s), „zbliża się do: …”, numer pojazdu; kurs, który już minął przystanek, znika.
+- **Przesiadki**: obok połączeń bezpośrednich – opcje z jedną przesiadką (z dojściem do 250 m między słupkami),
+  ale tylko gdy wyraźnie wygrywają (bezpośredni kurs wyjeżdżający nie wcześniej i najwyżej 2 min wolniejszy wygrywa).
+  Przy opóźnieniu pierwszego kursu aplikacja ostrzega „przesiadka zagrożona”.
+- **Na żywo**: opóźnienia z GTFS-RT ZTM (co 20 s), „zbliża się do: …”, numer pojazdu, odległość pojazdu od Twojego
+  przystanku z GPS; kurs, który już minął przystanek, znika – chyba że GPS pokazuje, że pojazd wciąż przy nim stoi.
 - **Offline**: cały rozkład miasta (~0,2 MB po kompresji) jest zapisywany w telefonie.
 
 ## Skąd dane
@@ -51,8 +55,9 @@ Testy: `node --test "tests/*.test.mjs"`.
    (Settings → Secrets and variables → Actions → Variables) albo w aplikacji: Ustawienia → Dane na żywo.
 4. Na telefonie otwórz stronę i wybierz „Dodaj do ekranu głównego”.
 
-Uwaga: GitHub wyłącza zaplanowane workflow w publicznym repo po 60 dniach bez żadnej aktywności w repozytorium.
-Aplikacja pokaże wtedy baner „rozkład nieaktualny” – wystarczy uruchomić workflow ręcznie (Actions → Run workflow).
+GitHub wyłącza zaplanowane workflow w publicznym repo po 60 dniach bez aktywności – dlatego job `keepalive`
+co najmniej co 45 dni zapisuje datę w `.github/keepalive`. Gdyby mimo to rozkład przestał się odświeżać,
+aplikacja pokaże baner „rozkład nieaktualny”; wtedy Actions → Run workflow.
 
 ## Jak to liczy
 

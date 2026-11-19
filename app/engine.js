@@ -227,6 +227,119 @@ export class Timetable {
     }));
   }
 
+  // ---------- przesiadki ----------
+  // przystanki w zasięgu pieszym (z samym przystankiem, dist 0), z pamięcią
+  _foot(i, maxWalkM) {
+    if (!this._footCache) this._footCache = new Map();
+    const key = i * 10000 + maxWalkM;
+    let f = this._footCache.get(key);
+    if (!f) { const s = this.stops[i]; f = this.nearStops(s.lat, s.lon, maxWalkM); this._footCache.set(key, f); }
+    return f;
+  }
+
+  // dni kursowania potrzebne do szukania drugiego odcinka (bez Intl w pętli – to drogie)
+  _days(fromMs, toMs) {
+    const out = [];
+    for (let D = ymdAdd(warsawYmd(fromMs), -1); D <= warsawYmd(toMs); D = ymdAdd(D, 1)) {
+      if (this.dateSet.has(D)) out.push({ D, base: serviceBase(D), act: this.activeFor(D) });
+    }
+    return out;
+  }
+
+  // najwcześniejszy kurs wzorca p odjeżdżający z pozycji q nie wcześniej niż readyMs
+  _nextTrip(p, q, readyMs, days, maxWaitMs) {
+    const off = this.pD[p][q];
+    let res = null;
+    for (const { D, base, act } of days) {
+      const target = Math.ceil((readyMs - base) / 1000) - off;
+      let a = this.pStart[p], b = this.pStart[p + 1];
+      while (a < b) { const m = (a + b) >> 1; if (this.tT0[m] < target) a = m + 1; else b = m; }
+      for (let k = a; k < this.pStart[p + 1]; k++) {
+        const dep = base + (this.tT0[k] + off) * 1000;
+        if (dep - readyMs > maxWaitMs) break;
+        if (!act[this.tSv[k]]) continue;
+        if (!res || dep < res.dep) res = { k, D, base, dep };
+        break;
+      }
+    }
+    return res;
+  }
+
+  // Połączenia z jedną przesiadką: kurs 1 z okolicy startu → (dojście ≤ maxWalkM) → kurs 2 do okolicy celu.
+  // Dla każdego wyjazdu kursem 1 wybiera przesiadkę dającą najwcześniejsze dotarcie na miejsce.
+  transferConnections(origin, dest, fromMs, toMs, {
+    minTransferSec = 120, maxWalkM = 250, maxWaitMs = 30 * 60000,
+    walkSec = (d) => Math.round((d * 1.3) / 80 * 60),
+  } = {}) {
+    const destMap = new Map(dest.map((d) => [d.i, d]));
+    const destPat = new Map(); // wzorzec -> [[pozycja, offset do drzwi celu]]
+    for (const d of dest) {
+      const sp = this.stopPats[d.i];
+      for (let x = 0; x < sp.length; x += 2) {
+        const p = sp[x], j = sp[x + 1];
+        if (this.dropoff(p, j) === 1) continue;
+        let a = destPat.get(p);
+        if (!a) destPat.set(p, (a = []));
+        a.push([j, this.arrOff(p, j) + d.walk]);
+      }
+    }
+    const bestAfter = (p, q) => {
+      const a = destPat.get(p);
+      if (!a) return null;
+      let b = null;
+      for (const e of a) if (e[0] > q && (!b || e[1] < b[1])) b = e;
+      return b;
+    };
+    const originSet = new Set(origin.map((o) => o.i));
+    const days = this._days(fromMs, toMs + 3 * 3600000);
+    const out = [];
+    for (const r of this.departures(origin, fromMs, toMs)) {
+      const p = r.p, s = this.pS[p], t0 = this.tT0[r.k];
+      let best = null;
+      for (let x = r.pos + 1; x < s.length; x++) {
+        if (destMap.has(s[x])) break; // ten kurs sam dojeżdża do celu – to połączenie bezpośrednie
+        if (this.dropoff(p, x) === 1) continue;
+        const arr1 = r.base + (t0 + this.arrOff(p, x)) * 1000;
+        if (best && arr1 >= best.door) break;
+        for (const nb of this._foot(s[x], maxWalkM)) {
+          if (originSet.has(nb.i)) continue; // przesiadka z powrotem przy starcie nie ma sensu
+          const w = nb.i === s[x] ? 0 : walkSec(nb.dist);
+          const ready = arr1 + (w + minTransferSec) * 1000;
+          const sp2 = this.stopPats[nb.i];
+          for (let y = 0; y < sp2.length; y += 2) {
+            const p2 = sp2[y], q = sp2[y + 1];
+            if (p2 === p || q === this.pS[p2].length - 1 || this.pickup(p2, q) === 1) continue;
+            const ba = bestAfter(p2, q);
+            if (!ba) continue;
+            const hit = this._nextTrip(p2, q, ready, days, maxWaitMs);
+            if (!hit) continue;
+            const door = hit.base + (this.tT0[hit.k] + ba[1]) * 1000;
+            if (best && (door > best.door || (door === best.door && hit.dep <= best.leg2.dep))) continue;
+            const arrStop = this.pS[p2][ba[0]];
+            const dd = destMap.get(arrStop);
+            best = {
+              door, x, arr1, w, dist: nb.dist,
+              leg2: {
+                k: hit.k, D: hit.D, base: hit.base, p: p2, pos: q, stop: nb.i, dep: hit.dep,
+                arrPos: ba[0], arrStop, arr: hit.base + (this.tT0[hit.k] + this.arrOff(p2, ba[0])) * 1000,
+                arrWalk: dd.walk, arrDist: dd.dist,
+              },
+            };
+          }
+        }
+      }
+      if (best) {
+        const l2 = best.leg2;
+        out.push({
+          ...r, leg2: l2,
+          xfer: { pos: best.x, stop: s[best.x], arr: best.arr1, walk: best.w, dist: best.dist },
+          arrStop: l2.arrStop, arrPos: l2.arrPos, arrWalk: l2.arrWalk, arrDist: l2.arrDist, arr: l2.arr,
+        });
+      }
+    }
+    return out;
+  }
+
   tripStops(k, D) {
     const p = this.tP[k], base = serviceBase(D);
     return this.pS[p].map((si, pos) => ({
@@ -325,6 +438,29 @@ export function markWorse(rows, nowMs) {
   return rows;
 }
 
+// Przesiadka ma sens tylko wtedy, gdy wyraźnie wygrywa. Ukrywa opcję z przesiadką, jeśli:
+// – jakieś połączenie bezpośrednie pozwala wyjść nie wcześniej i dojechać najwyżej tolMs później
+//   (bez przesiadki wolimy nawet trochę dłużej), albo
+// – inna opcja z przesiadką jest od niej nie gorsza pod oboma względami (i lepsza w jednym).
+// Na koniec zostawia maxKeep opcji z przesiadką (najwcześniej na miejscu).
+export function pruneTransfers(rows, nowMs, { tolMs = 2 * 60000, maxKeep = 12 } = {}) {
+  const direct = rows.filter((r) => !r.leg2);
+  const xf = rows.filter((r) => r.leg2);
+  // jedna opcja na kurs 2 (ten sam autobus po przesiadce) – z najpóźniejszym wyjściem
+  const byLeg2 = new Map();
+  for (const r of xf) {
+    const key = `${r.leg2.k}|${r.leg2.D}`;
+    const cur = byLeg2.get(key);
+    if (!cur || r.leave > cur.leave || (r.leave === cur.leave && r.door < cur.door)) byLeg2.set(key, r);
+  }
+  const cand = [...byLeg2.values()];
+  const keep = cand.filter((x) => {
+    if (direct.some((y) => y.door != null && y.leave >= x.leave && y.door <= x.door + tolMs && y.leave >= nowMs - 90000)) return false;
+    return !cand.some((y) => y !== x && y.leave >= x.leave && y.door <= x.door && (y.leave > x.leave || y.door < x.door));
+  }).sort((a, b) => a.door - b.door).slice(0, maxKeep);
+  return direct.concat(keep);
+}
+
 // ---------- GTFS-RT (protobuf) ----------
 function pbRead(buf, start, end, cb) {
   let p = start;
@@ -349,7 +485,8 @@ function pbRead(buf, start, end, cb) {
       if (l > end - p) throw new Error('pb: zła długość pola');
       cb(f, 2, null, p, p + l); p += l;
     } else if (w === 5) {
-      if (p + 4 > end) throw new Error('pb: ucięte pole'); p += 4;
+      if (p + 4 > end) throw new Error('pb: ucięte pole');
+      cb(f, 5, null, p, p + 4); p += 4;
     } else if (w === 1) {
       if (p + 8 > end) throw new Error('pb: ucięte pole'); p += 8;
     } else throw new Error('pb wire ' + w);
@@ -405,12 +542,50 @@ export function decodeTripUpdates(u8) {
   return { ts, updates };
 }
 
-// Nakłada opóźnienia na wyniki. rt: { ts, byTrip: Map k -> upd }
+const f32 = (buf, a) => new DataView(buf.buffer, buf.byteOffset + a, 4).getFloat32(0, true);
+
+// Pozycje pojazdów: Map trip_id -> { lat, lon, seq, ts, vehicle, label } (przy powtórzeniach – nowszy wpis)
+export function decodeVehiclePositions(u8) {
+  const out = new Map();
+  let ts = 0;
+  pbRead(u8, 0, u8.length, (f, w, v, a, b) => {
+    if (f === 1 && w === 2) pbRead(u8, a, b, (g, ww, vv) => { if (g === 3 && ww === 0) ts = vv; });
+    if (f !== 2 || w !== 2) return;
+    pbRead(u8, a, b, (ef, ew, ev, ea, eb) => {
+      if (ef !== 4 || ew !== 2) return;
+      let tripId = null, lat = null, lon = null, seq = null, vts = 0, vehicle = '', label = '';
+      pbRead(u8, ea, eb, (g, gw, gv, ga, gb) => {
+        if (g === 1 && gw === 2) pbRead(u8, ga, gb, (h, hw, hv, ha, hb) => { if (h === 1 && hw === 2) tripId = str(u8, ha, hb); });
+        else if (g === 2 && gw === 2) pbRead(u8, ga, gb, (h, hw, hv, ha) => {
+          if (h === 1 && hw === 5) lat = f32(u8, ha);
+          if (h === 2 && hw === 5) lon = f32(u8, ha);
+        });
+        else if (g === 3 && gw === 0) seq = gv;
+        else if (g === 5 && gw === 0) vts = gv;
+        else if (g === 8 && gw === 2) pbRead(u8, ga, gb, (h, hw, hv, ha, hb) => {
+          if (h === 1 && hw === 2) vehicle = str(u8, ha, hb);
+          if (h === 2 && hw === 2) label = str(u8, ha, hb);
+        });
+      });
+      if (tripId == null || lat == null || lon == null || !Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      if (Math.abs(lat) < 1 && Math.abs(lon) < 1) return; // brak fixu GPS (0,0)
+      const old = out.get(tripId);
+      if (old && old.ts > vts) return;
+      out.set(tripId, { lat, lon, seq, ts: vts, vehicle, label });
+    });
+  });
+  return { ts, positions: out };
+}
+
+// Pojazd „przy przystanku” wg GPS (m). Dalej – ufamy numerowi przystanku z trip_updates.
+export const VP_AT_STOP_M = 120;
+
+// Nakłada opóźnienia na wyniki. rt: { ts, byTrip: Map k -> upd, vpByTrip?: Map k -> vp }
 export const RT_MAX_ABS_DELAY = 2 * 3600;   // większe wartości to błędy źródła
 export const RT_MAX_EARLY = 3 * 60;         // przyspieszenie liczymy maks. 3 min
 export const RT_MAX_IMPLAUSIBLE_EARLY = 10 * 60; // > 10 min przed czasem w trasie = błędne przypisanie
 export function applyRt(tt, r, rt, nowMs) {
-  r.live = false; r.delay = 0; r.gone = false; r.near = null;
+  r.live = false; r.delay = 0; r.gone = false; r.near = null; r.vpDist = null; r.atStop = false;
   r.pDep = r.dep; if (r.arr != null) r.pArr = r.arr;
   if (!rt) return r;
   const upd = rt.byTrip.get(r.k);
@@ -438,7 +613,22 @@ export function applyRt(tt, r, rt, nowMs) {
   r.live = true;
   const near = tt.stops[tt.pS[tt.tP[r.k]][posRt]];
   r.near = near ? near.name : null;
-  if (r.pos < posRt) { r.gone = true; return r; } // pojazd już minął nasz przystanek
+  const vp = rt.vpByTrip ? rt.vpByTrip.get(r.k) : null;
+  if (vp) {
+    const os = tt.stops[tt.pS[tt.tP[r.k]][r.pos]];
+    r.vpDist = os ? Math.round(distM(vp.lat, vp.lon, os.lat, os.lon)) : null;
+  }
+  if (r.pos < posRt) {
+    // GPS rozstrzyga: pojazd stoi przy naszym przystanku, choć numer przystanku już „przeskoczył”
+    if (r.vpDist != null && r.vpDist <= VP_AT_STOP_M && Math.abs(r.dep - nowMs) < 20 * 60000) {
+      r.delay = Math.max(0, Math.round((nowMs - r.dep) / 1000));
+      r.pDep = Math.max(r.dep, nowMs);
+      if (r.arr != null) r.pArr = r.arr + r.delay * 1000;
+      r.atStop = true;
+      return r;
+    }
+    r.gone = true; return r; // pojazd już minął nasz przystanek
+  }
   let d = upd.delay;
   if (d < 0) d = posRt === 0 ? 0 : Math.max(d, -RT_MAX_EARLY);
   r.delay = d;
